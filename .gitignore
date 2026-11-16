@@ -1,0 +1,37 @@
+# ---------------------------------------------------------------- secrets
+.env
+.env.*
+
+# ---------------------------------------------------------------- private working notes
+step1-data-model-olist.md
+step2-sql-lane-rules.md
+work.txt
+output.txt
+sqlpath.txt
+CRM analytics assistant project design doc.pdf
+
+# ---------------------------------------------------------------- data
+# The Olist CSVs (~120 MB). Download them from Kaggle (links in README.md and db/README.md)
+# into these folders before running load_raw.py.
+olist_public_dataset/
+olist_marketing_dataset/
+
+# ---------------------------------------------------------------- Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------- tools
+.deepeval/
+.vscode/
+.idea/
+
+# ---------------------------------------------------------------- OS
+.DS_Store
+Thumbs.db
+desktop.ini

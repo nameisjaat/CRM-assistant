@@ -1,0 +1,1082 @@
+# Golden set for the sql_query lane (step2-sql-lane-rules.md, Part F).
+#
+# Drafted and self-checked by Claude Code; reviewed by the project owner, who set every entry to
+# verified: true (2026-11-15). Only verified entries count.
+# expected_result was produced by running reference_sql read-only against the analytics
+# schema (search_path analytics, time zone America/Sao_Paulo). The data is static.
+#
+# Fields (names follow sql_lane/state.py, so result[...] compares with expected_...)
+#   id, question, difficulty (easy | medium | hard)
+#   tables                    minimum tables the answer needs; state.tables must contain them
+#   answerable                expected state.answerable
+#   expected_status           expected state.status: ok | unanswerable
+#   expected_shape            expected state.expected_shape: {kind, max_rows, order_matters}
+#                             (max_rows = the LIMIT, null when there is none); null if unanswerable
+#   rules                     traps tested, i.e. rules whose violation changes the answer: Part C
+#                             ids (C1..C15), SQL rule ids, default:<name>, A4:<topic>, empty_result.
+#                             Rules followed but not testable on this data are explained in verification.
+#   expected_assumptions      defaults state.assumptions should contain (LLM-judge metric)
+#   reference_sql             returns only the columns the question asks for
+#   expected_result           expected state.columns, state.rows, state.truncated (+ row_count)
+#   unanswerable_reason_topic (unanswerable only) what state.unanswerable_reason should mention
+#   notes                     why this is the answer
+#   verification              Claude Code's self-check: each listed rule checked against
+#                             sql_lane/rules.py, and whether breaking the trap changes the answer
+#   verified                  true only after the project owner has reviewed reference_sql
+#
+# Scoring (agreed): compare results, not SQL text
+#   - ignore column names and column order; extra columns in the pipeline's result are fine
+#     as long as every reference column's values appear among them
+#   - ignore row order unless shape.order_matters is true
+#   - numbers match within 0.01
+#   - time_series month/year labels: the pipeline may format them differently (2017-01,
+#     2017-01-01, 1); the scorer should normalise labels or compare by position.
+
+- id: q01
+  question: How many customers are there?
+  difficulty: easy
+  tables:
+  - customers
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: single_value
+    max_rows: null
+    order_matters: false
+  rules: []
+  expected_assumptions:
+  - 'Customers are counted as real people: COUNT(DISTINCT customer_id)'
+  reference_sql: |-
+    SELECT count(DISTINCT customer_id) AS customer_count
+    FROM customers
+  expected_result:
+    columns: [customer_count]
+    rows:
+    - [96096]
+    truncated: false
+    row_count: 1
+  notes: customers has one row per real person (Step 1 merged repeat customer ids).
+  verification: 'C4: COUNT(DISTINCT customer_id) as required. Trap does not change the answer here: customers
+    already has one row per person (COUNT(*) = 96,096 too).'
+  verified: true
+- id: q02
+  question: How many orders were placed this year?
+  difficulty: easy
+  tables:
+  - orders
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: single_value
+    max_rows: null
+    order_matters: false
+  rules:
+  - C3
+  - default:this_year
+  expected_assumptions:
+  - '''This year'' means 2018, the latest year in the data'
+  reference_sql: |-
+    SELECT count(*) AS order_count
+    FROM orders
+    WHERE extract(year FROM purchased_at) = 2018
+  expected_result:
+    columns: [order_count]
+    rows:
+    - [54011]
+    truncated: false
+    row_count: 1
+  notes: '''This year'' is anchored to the latest purchased_at (2018-10-17), not today''s date. Counts
+    every order regardless of status.'
+  verification: 'C3: counted from orders. ''This year'' = 2018 (latest purchased_at 2018-10-17). Trap
+    changes the answer: using the current calendar year gives 0.'
+  verified: true
+- id: q03
+  question: How many units of health and beauty products were sold, excluding canceled and unavailable
+    orders?
+  difficulty: medium
+  tables:
+  - order_items
+  - orders
+  - products
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: single_value
+    max_rows: null
+    order_matters: false
+  rules:
+  - C2
+  - default:category_words
+  expected_assumptions:
+  - '''Health and beauty'' is the category health_beauty'
+  - Each order_items row is one unit
+  reference_sql: |-
+    SELECT count(*) AS units
+    FROM order_items i
+    JOIN orders o ON o.order_id = i.order_id
+    JOIN products p ON p.product_id = i.product_id
+    WHERE p.category = 'health_beauty'
+      AND o.status NOT IN ('canceled', 'unavailable')
+  expected_result:
+    columns: [units]
+    rows:
+    - [9634]
+    truncated: false
+    row_count: 1
+  notes: 'No quantity column: buying 3 of a product is 3 rows. The status exclusion is stated in the question
+    so the answer isn''t ambiguous.'
+  verification: 'C2: COUNT(*) of order_items rows. SQL6: ''health_beauty'' is the only category matching
+    ''health and beauty'' (no other value contains ''beauty''). Status exclusion as stated in the question.'
+  verified: true
+- id: q04
+  question: What is the average review score of orders delivered to the state of AM?
+  difficulty: medium
+  tables:
+  - order_reviews
+  - orders
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: single_value
+    max_rows: null
+    order_matters: false
+  rules:
+  - C6
+  expected_assumptions:
+  - Uses only the latest review per order
+  - '''Delivered to AM'' means orders.delivery_state = ''AM'''
+  reference_sql: |-
+    SELECT round(avg(r.score), 2) AS avg_score
+    FROM order_reviews r
+    JOIN orders o ON o.order_id = r.order_id
+    WHERE r.is_latest_for_order
+      AND o.delivery_state = 'AM'
+  expected_result:
+    columns: [avg_score]
+    rows:
+    - [4.21]
+    truncated: false
+    row_count: 1
+  notes: Where an order went = orders.delivery_state (C8). Without is_latest_for_order, orders with several
+    reviews count more than once.
+  verification: 'C6: filters is_latest_for_order; changes the answer (4.21 with, 4.18 without). C8: orders.delivery_state
+    for ''delivered to''; customers.state happens to give the same 4.21 for AM, so this question does
+    not test C8.'
+  verified: true
+- id: q05
+  question: What percentage of delivered orders arrived late?
+  difficulty: medium
+  tables:
+  - orders
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: single_value
+    max_rows: null
+    order_matters: false
+  rules:
+  - C7
+  - SQL4
+  expected_assumptions:
+  - Only delivered orders without date issues
+  reference_sql: |-
+    SELECT round(100.0 * avg(CASE WHEN is_late THEN 1 ELSE 0 END), 2) AS late_pct
+    FROM orders
+    WHERE status = 'delivered' AND NOT has_date_issue
+  expected_result:
+    columns: [late_pct]
+    rows:
+    - [6.77]
+    truncated: false
+    row_count: 1
+  notes: Percentage on a 0-100 scale. Orders with date issues are excluded (C7).
+  verification: 'C7: status = ''delivered'' AND NOT has_date_issue. The status filter changes the answer
+    (6.77 with, 6.57 without); the has_date_issue part does not (its 8 delivered orders have NULL is_late).
+    SQL4: 0-100 scale, alias ends in _pct.'
+  verified: true
+- id: q06
+  question: What was the average order value in 2018?
+  difficulty: hard
+  tables:
+  - order_items
+  - orders
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: single_value
+    max_rows: null
+    order_matters: false
+  rules:
+  - C1
+  - C3
+  expected_assumptions:
+  - Order value = sum of item prices, freight excluded
+  - Canceled and unavailable orders are excluded
+  reference_sql: |-
+    WITH per_order AS (
+      SELECT i.order_id, sum(i.unit_price) AS order_revenue
+      FROM order_items i
+      JOIN orders o ON o.order_id = i.order_id
+      WHERE o.status NOT IN ('canceled', 'unavailable')
+        AND extract(year FROM o.purchased_at) = 2018
+      GROUP BY i.order_id
+    )
+    SELECT round(avg(order_revenue), 2) AS avg_order_revenue
+    FROM per_order
+  expected_result:
+    columns: [avg_order_revenue]
+    rows:
+    - [137.14]
+    truncated: false
+    row_count: 1
+  notes: Revenue per order first, then the average over orders. Equal to total revenue / number of orders
+    with items. Averaging item prices directly would be wrong.
+  verification: 'C1: SUM(unit_price), canceled/unavailable excluded, no freight. Per-order value first:
+    equals total revenue / distinct orders (137.14); averaging item prices gives 120.08, so the trap changes
+    the answer.'
+  verified: true
+- id: q07
+  question: How many closed deals were with sellers who have a wolf behaviour profile?
+  difficulty: medium
+  tables:
+  - closed_deals
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: single_value
+    max_rows: null
+    order_matters: false
+  rules:
+  - C12
+  expected_assumptions: []
+  reference_sql: |-
+    SELECT count(*) AS deal_count
+    FROM closed_deals
+    WHERE behaviour_profile ILIKE '%wolf%'
+  expected_result:
+    columns: [deal_count]
+    rows:
+    - [107]
+    truncated: false
+    row_count: 1
+  notes: Profiles can be combined ('cat, wolf', 'eagle, wolf', 'shark, wolf'); = 'wolf' would miss those.
+  verification: 'C12: ILIKE ''%wolf%''. Trap changes the answer: = ''wolf'' gives 95 instead of 107.'
+  verified: true
+- id: q08
+  question: How many review messages contain the Portuguese word 'atraso' (delay)?
+  difficulty: medium
+  tables:
+  - order_reviews
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: single_value
+    max_rows: null
+    order_matters: false
+  rules:
+  - C13
+  expected_assumptions: []
+  reference_sql: |-
+    SELECT count(*) AS review_count
+    FROM order_reviews
+    WHERE message ILIKE '%atraso%'
+  expected_result:
+    columns: [review_count]
+    rows:
+    - [345]
+    truncated: false
+    row_count: 1
+  notes: 'Counts every review row whose message contains ''atraso'' (case-insensitive), not only the latest
+    review per order: the question is about messages, not orders.'
+  verification: 'C13: Portuguese keyword, case-insensitive. Counts every review row with that word (the
+    question is about messages).'
+  verified: true
+- id: q09
+  question: How many customers have a zip code prefix that does not exist in the geolocation table?
+  difficulty: medium
+  tables:
+  - customers
+  - geolocation
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: single_value
+    max_rows: null
+    order_matters: false
+  rules:
+  - C10
+  - C4
+  expected_assumptions: []
+  reference_sql: |-
+    SELECT count(DISTINCT c.customer_id) AS customer_count
+    FROM customers c
+    LEFT JOIN geolocation g ON g.zip_prefix = c.zip_prefix
+    WHERE g.zip_prefix IS NULL
+  expected_result:
+    columns: [customer_count]
+    rows:
+    - [269]
+    truncated: false
+    row_count: 1
+  notes: 'Needs a LEFT JOIN (or NOT EXISTS): some zip prefixes have no geolocation row.'
+  verification: 'C10: LEFT JOIN with IS NULL (equivalent to NOT EXISTS). An inner join would return 0
+    by construction. geolocation has one row per zip_prefix, so no row multiplication.'
+  verified: true
+- id: q10
+  question: Which 5 product categories sold the most units in 2017, excluding canceled and unavailable
+    orders?
+  difficulty: medium
+  tables:
+  - order_items
+  - orders
+  - products
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: list
+    max_rows: 5
+    order_matters: true
+  rules:
+  - C2
+  - SQL7
+  expected_assumptions:
+  - Each order_items row is one unit
+  reference_sql: |-
+    SELECT p.category, count(*) AS units
+    FROM order_items i
+    JOIN orders o ON o.order_id = i.order_id
+    JOIN products p ON p.product_id = i.product_id
+    WHERE o.status NOT IN ('canceled', 'unavailable')
+      AND extract(year FROM o.purchased_at) = 2017
+    GROUP BY p.category
+    ORDER BY units DESC
+    LIMIT 5
+  expected_result:
+    columns: [category, units]
+    rows:
+    - [bed_bath_table, 5216]
+    - [furniture_decor, 4131]
+    - [sports_leisure, 4070]
+    - [health_beauty, 3661]
+    - [computers_accessories, 3077]
+    truncated: false
+    row_count: 5
+  notes: No tie at the cut-off (5th = 3,077, 6th = 2,883).
+  verification: 'C2: COUNT(*) per category; SQL7: ORDER BY units DESC LIMIT 5. Status exclusion as stated.
+    No tie at the cut-off (3,077 vs 2,883).'
+  verified: true
+- id: q11
+  question: What are the top cities by number of customers?
+  difficulty: medium
+  tables:
+  - customers
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: list
+    max_rows: 10
+    order_matters: true
+  rules:
+  - C4
+  - C9
+  - default:top
+  expected_assumptions:
+  - '''Top'' with no number means top 10'
+  - Customers counted as COUNT(DISTINCT customer_id)
+  reference_sql: |-
+    SELECT city, count(DISTINCT customer_id) AS customer_count
+    FROM customers
+    GROUP BY city
+    ORDER BY customer_count DESC
+    LIMIT 10
+  expected_result:
+    columns: [city, customer_count]
+    rows:
+    - [sao paulo, 14972]
+    - [rio de janeiro, 6612]
+    - [belo horizonte, 2669]
+    - [brasilia, 2066]
+    - [curitiba, 1462]
+    - [campinas, 1396]
+    - [porto alegre, 1326]
+    - [salvador, 1207]
+    - [guarulhos, 1151]
+    - [sao bernardo do campo, 908]
+    truncated: false
+    row_count: 10
+  notes: The question asks for cities, so city (not state) is right here. Where the customer lives = customers.city.
+    No tie at the cut-off (10th = 908, 11th = 810).
+  verification: 'C4: COUNT(DISTINCT customer_id); C9: the question asks for cities, so city is right;
+    ''top'' = 10 (default); city values lowercase without accents. No tie at the cut-off (908 vs 810).'
+  verified: true
+- id: q12
+  question: Which 3 sellers had the highest average review score, among sellers with at least 50 reviewed
+    orders?
+  difficulty: hard
+  tables:
+  - order_items
+  - order_reviews
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: list
+    max_rows: 3
+    order_matters: true
+  rules:
+  - C6
+  - C5
+  expected_assumptions:
+  - Uses only the latest review per order
+  - An order with several sellers counts for each of them
+  reference_sql: |-
+    WITH seller_orders AS (
+      SELECT DISTINCT order_id, seller_id FROM order_items
+    ),
+    r AS (
+      SELECT order_id, score FROM order_reviews WHERE is_latest_for_order
+    )
+    SELECT so.seller_id, round(avg(r.score), 2) AS avg_score
+    FROM seller_orders so
+    JOIN r ON r.order_id = so.order_id
+    GROUP BY so.seller_id
+    HAVING count(*) >= 50
+    ORDER BY avg_score DESC
+    LIMIT 3
+  expected_result:
+    columns: [seller_id, avg_score]
+    rows:
+    - [d13e50eaa47b4cbe9eb81465865d8cfc, 4.82]
+    - [d9bd94811c3338dceb4181f3dbc0c73e, 4.8]
+    - [d566c37fa119d5e66c4e9052e83ee4ea, 4.69]
+    truncated: false
+    row_count: 3
+  notes: One row per (order, seller) so an order with 3 items from one seller counts once. No tie at the
+    cut-off (3rd = 4.69, 4th = 4.67).
+  verification: 'C6: latest review only; C5: order_items and order_reviews read in separate CTEs. One
+    row per (order, seller) changes the answer: averaging over item rows reorders the top 3 (d9bd... first).
+    No tie at the cut-off (4.69 vs 4.67).'
+  verified: true
+- id: q13
+  question: Which 5 delivery states had the longest average delivery time?
+  difficulty: medium
+  tables:
+  - orders
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: list
+    max_rows: 5
+    order_matters: true
+  rules:
+  - C8
+  - SQL7
+  expected_assumptions:
+  - Only delivered orders without date issues
+  - State = where the order was delivered
+  reference_sql: |-
+    SELECT delivery_state, round(avg(delivery_days), 2) AS avg_delivery_days
+    FROM orders
+    WHERE status = 'delivered' AND NOT has_date_issue
+    GROUP BY delivery_state
+    ORDER BY avg_delivery_days DESC
+    LIMIT 5
+  expected_result:
+    columns: [delivery_state, avg_delivery_days]
+    rows:
+    - [RR, 29.38]
+    - [AP, 27.19]
+    - [AM, 26.42]
+    - [AL, 24.54]
+    - [PA, 23.77]
+    truncated: false
+    row_count: 5
+  notes: Where the order went = orders.delivery_state (C8). No tie at the cut-off.
+  verification: 'C8: orders.delivery_state for where orders went; SQL7: ORDER BY DESC LIMIT 5; _days alias,
+    rounded after averaging. C7: the filter is written as required, but this data cannot test it: delivery_days
+    is already NULL for every non-delivered or date-issue order.'
+  verified: true
+- id: q14
+  question: Which area has the most sellers?
+  difficulty: easy
+  tables:
+  - sellers
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: list
+    max_rows: 1
+    order_matters: true
+  rules:
+  - C9
+  - default:area
+  expected_assumptions:
+  - '''Area'' means state'
+  reference_sql: |-
+    SELECT state, count(*) AS seller_count
+    FROM sellers
+    GROUP BY state
+    ORDER BY seller_count DESC
+    LIMIT 1
+  expected_result:
+    columns: [state, seller_count]
+    rows:
+    - [SP, 1849]
+    truncated: false
+    row_count: 1
+  notes: '''Area'' defaults to state.'
+  verification: 'C9: ''area'' = state (default); sellers.state is where a seller is based.'
+  verified: true
+- id: q15
+  question: Which 5 sales reps closed the most deals in 2018?
+  difficulty: medium
+  tables:
+  - closed_deals
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: list
+    max_rows: 5
+    order_matters: true
+  rules:
+  - default:sales_rep
+  - SQL7
+  expected_assumptions:
+  - '''Sales rep'' is closed_deals.sr_id'
+  reference_sql: |-
+    SELECT sr_id, count(*) AS deal_count
+    FROM closed_deals
+    WHERE extract(year FROM won_at) = 2018
+    GROUP BY sr_id
+    ORDER BY deal_count DESC
+    LIMIT 5
+  expected_result:
+    columns: [sr_id, deal_count]
+    rows:
+    - [4ef15afb4b2723d8f3d81e51ec7afefe, 133]
+    - [d3d1e91a157ea7f90548eef82f1955e3, 82]
+    - [6565aa9ce3178a5caf6171827af3a9ba, 74]
+    - [85fc447d336637ba1df43e793199fbc8, 64]
+    - [495d4e95a8cf8bbf8b432b612a2aa328, 61]
+    truncated: false
+    row_count: 5
+  notes: Only ids exist (anonymized). No tie at the cut-off (5th = 61, 6th and 7th = 59).
+  verification: '''Sales rep'' = closed_deals.sr_id (default); SQL7: ORDER BY DESC LIMIT 5; no NULL sr_id.
+    No tie at the cut-off (61 vs 59).'
+  verified: true
+- id: q16
+  question: Which payment method accounts for the largest total amount paid?
+  difficulty: easy
+  tables:
+  - order_payments
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: list
+    max_rows: 1
+    order_matters: true
+  rules: []
+  expected_assumptions: []
+  reference_sql: |-
+    SELECT method, round(sum(amount), 2) AS total_amount
+    FROM order_payments
+    GROUP BY method
+    ORDER BY total_amount DESC
+    LIMIT 1
+  expected_result:
+    columns: [method, total_amount]
+    rows:
+    - [credit_card, 12542084.19]
+    truncated: false
+    row_count: 1
+  notes: A question about payments, so order_payments.amount is right here (not revenue).
+  verification: A payments question, so order_payments.amount is right (C1 forbids payments only for revenue).
+    Alias ends in amount; rounded after summing.
+  verified: true
+- id: q17
+  question: List the ids of sellers based in the state of AP.
+  difficulty: easy
+  tables:
+  - sellers
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: list
+    max_rows: null
+    order_matters: false
+  rules:
+  - empty_result
+  expected_assumptions: []
+  reference_sql: |-
+    SELECT seller_id
+    FROM sellers
+    WHERE state = 'AP'
+  expected_result:
+    columns: [seller_id]
+    rows: []
+    truncated: false
+    row_count: 0
+  notes: 'Genuinely empty: no seller is based in AP. The lane should retry once, then accept 0 rows with
+    status ok.'
+  verification: '''AP'' is a valid state code (customers live there) but no seller is based there: a real
+    empty result.'
+  verified: true
+- id: q18
+  question: How many orders are there in each status?
+  difficulty: easy
+  tables:
+  - orders
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: grouped
+    max_rows: null
+    order_matters: false
+  rules:
+  - C3
+  expected_assumptions: []
+  reference_sql: |-
+    SELECT status, count(*) AS order_count
+    FROM orders
+    GROUP BY status
+  expected_result:
+    columns: [status, order_count]
+    rows:
+    - [shipped, 1107]
+    - [unavailable, 609]
+    - [invoiced, 314]
+    - [created, 5]
+    - [approved, 2]
+    - [processing, 301]
+    - [delivered, 96478]
+    - [canceled, 625]
+    truncated: false
+    row_count: 8
+  notes: Counted from orders, not order_items.
+  verification: 'C3: counted from orders, one row per status.'
+  verified: true
+- id: q19
+  question: What is the average review score of customers in each state?
+  difficulty: medium
+  tables:
+  - order_reviews
+  - orders
+  - customers
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: grouped
+    max_rows: null
+    order_matters: false
+  rules:
+  - C6
+  - C8
+  expected_assumptions:
+  - Uses only the latest review per order
+  - State = where the customer lives (customers.state)
+  reference_sql: |-
+    WITH r AS (
+      SELECT order_id, score FROM order_reviews WHERE is_latest_for_order
+    )
+    SELECT c.state, round(avg(r.score), 2) AS avg_score
+    FROM r
+    JOIN orders o ON o.order_id = r.order_id
+    JOIN customers c ON c.customer_id = o.customer_id
+    GROUP BY c.state
+  expected_result:
+    columns: [state, avg_score]
+    rows:
+    - [AC, 4.05]
+    - [AL, 3.76]
+    - [AM, 4.21]
+    - [AP, 4.19]
+    - [BA, 3.86]
+    - [CE, 3.86]
+    - [DF, 4.07]
+    - [ES, 4.04]
+    - [GO, 4.04]
+    - [MA, 3.76]
+    - [MG, 4.14]
+    - [MS, 4.11]
+    - [MT, 4.1]
+    - [PA, 3.85]
+    - [PB, 4.02]
+    - [PE, 4.01]
+    - [PI, 3.92]
+    - [PR, 4.18]
+    - [RJ, 3.88]
+    - [RN, 4.11]
+    - [RO, 4.05]
+    - [RR, 3.61]
+    - [RS, 4.13]
+    - [SC, 4.08]
+    - [SE, 3.81]
+    - [SP, 4.17]
+    - [TO, 4.1]
+    truncated: false
+    row_count: 27
+  notes: '''Customers in each state'' = customers.state, not orders.delivery_state (C8).'
+  verification: 'C6: latest review only; changes the answer for 7 of 27 states. C8: customers.state for
+    where customers live; using delivery_state changes DF and SC.'
+  verified: true
+- id: q20
+  question: What share of the total amount paid does each payment method account for?
+  difficulty: medium
+  tables:
+  - order_payments
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: grouped
+    max_rows: null
+    order_matters: false
+  rules:
+  - SQL4
+  expected_assumptions: []
+  reference_sql: |-
+    SELECT method,
+      round(100.0 * sum(amount) / (SELECT sum(amount) FROM order_payments), 2) AS amount_pct
+    FROM order_payments
+    GROUP BY method
+  expected_result:
+    columns: [method, amount_pct]
+    rows:
+    - [boleto, 17.92]
+    - [debit_card, 1.36]
+    - [voucher, 2.37]
+    - [unknown, 0.0]
+    - [credit_card, 78.34]
+    truncated: false
+    row_count: 5
+  notes: Percentages on a 0-100 scale; they add up to 100.
+  verification: 'SQL4: 0-100 scale; the shares add up to exactly 100.00.'
+  verified: true
+- id: q21
+  question: For delivered orders, what are the total amount paid and the total product revenue in each
+    customer state?
+  difficulty: hard
+  tables:
+  - order_payments
+  - order_items
+  - orders
+  - customers
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: grouped
+    max_rows: null
+    order_matters: false
+  rules:
+  - C5
+  - C1
+  - C8
+  expected_assumptions:
+  - Product revenue = sum of item prices, freight excluded
+  - State = where the customer lives
+  reference_sql: |-
+    WITH pay AS (
+      SELECT order_id, sum(amount) AS paid_amount FROM order_payments GROUP BY order_id
+    ),
+    items AS (
+      SELECT order_id, sum(unit_price) AS item_revenue FROM order_items GROUP BY order_id
+    )
+    SELECT c.state,
+      round(sum(pay.paid_amount), 2) AS total_paid_amount,
+      round(sum(items.item_revenue), 2) AS revenue
+    FROM orders o
+    JOIN customers c ON c.customer_id = o.customer_id
+    LEFT JOIN pay ON pay.order_id = o.order_id
+    LEFT JOIN items ON items.order_id = o.order_id
+    WHERE o.status = 'delivered'
+    GROUP BY c.state
+  expected_result:
+    columns: [state, total_paid_amount, revenue]
+    rows:
+    - [AC, 19586.25, 15930.97]
+    - [AL, 94195.79, 78855.72]
+    - [AM, 27596.18, 22155.84]
+    - [AP, 16141.81, 13374.81]
+    - [BA, 590993.99, 493354.15]
+    - [CE, 266728.51, 219989.18]
+    - [DF, 346098.22, 296462.5]
+    - [ES, 317826.85, 268733.35]
+    - [GO, 333638.05, 282358.9]
+    - [MA, 148268.88, 117322.18]
+    - [MG, 1818932.65, 1552242.81]
+    - [MS, 134233.2, 115260.07]
+    - [MT, 181540.96, 152276.72]
+    - [PA, 212027.55, 174470.59]
+    - [PB, 137525.67, 112337.93]
+    - [PE, 308739.01, 251677.99]
+    - [PI, 105272.17, 84721.0]
+    - [PR, 780868.38, 665108.64]
+    - [RJ, 2055586.4, 1759511.94]
+    - [RN, 100728.3, 82105.66]
+    - [RO, 57132.98, 45801.66]
+    - [RR, 9039.52, 7057.47]
+    - [RS, 861886.46, 728977.47]
+    - [SC, 594893.45, 506710.13]
+    - [SE, 70519.05, 56750.28]
+    - [SP, 5772454.12, 5069547.64]
+    - [TO, 60007.37, 48402.51]
+    truncated: false
+    row_count: 27
+  notes: 'Payments and items are each aggregated per order before joining (C5); joining them directly
+    multiplies rows. LEFT JOINs because one delivered order has no payment row: an inner join would drop
+    that order''s item revenue.'
+  verification: 'C5: payments and items aggregated per order in separate CTEs; joining them directly inflates
+    SP revenue (5,309,379.51 vs 5,069,547.64). C1: status = ''delivered'' already excludes canceled/unavailable;
+    no freight. C8: customers.state; delivery_state changes BA, CE, DF, ES, GO. LEFT JOINs keep the one
+    delivered order without a payment (an inner join loses 134.97 of SP revenue).'
+  verified: true
+- id: q22
+  question: For resellers and manufacturers, how many deals were closed and what was the average number
+    of days to close?
+  difficulty: medium
+  tables:
+  - closed_deals
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: grouped
+    max_rows: null
+    order_matters: false
+  rules: []
+  expected_assumptions: []
+  reference_sql: |-
+    SELECT business_type, count(*) AS deal_count, round(avg(days_to_close), 2) AS avg_close_days
+    FROM closed_deals
+    WHERE business_type IN ('reseller', 'manufacturer')
+    GROUP BY business_type
+  expected_result:
+    columns: [business_type, deal_count, avg_close_days]
+    rows:
+    - [reseller, 586, 49.22]
+    - [manufacturer, 242, 45.42]
+    truncated: false
+    row_count: 2
+  notes: Only the two business types asked for (the data also has 'other' and NULL).
+  verification: Only the two business types asked for; days_to_close is an integer day count; alias ends
+    in _days; rounded after averaging.
+  verified: true
+- id: q23
+  question: How many orders were placed each month in 2017?
+  difficulty: easy
+  tables:
+  - orders
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: time_series
+    max_rows: null
+    order_matters: true
+  rules:
+  - C3
+  expected_assumptions: []
+  reference_sql: |-
+    SELECT to_char(purchased_at, 'YYYY-MM') AS month, count(*) AS order_count
+    FROM orders
+    WHERE extract(year FROM purchased_at) = 2017
+    GROUP BY month
+    ORDER BY month
+  expected_result:
+    columns: [month, order_count]
+    rows:
+    - [2017-01, 800]
+    - [2017-02, 1780]
+    - [2017-03, 2682]
+    - [2017-04, 2404]
+    - [2017-05, 3700]
+    - [2017-06, 3245]
+    - [2017-07, 4026]
+    - [2017-08, 4331]
+    - [2017-09, 4285]
+    - [2017-10, 4631]
+    - [2017-11, 7544]
+    - [2017-12, 5673]
+    truncated: false
+    row_count: 12
+  notes: 12 rows. Month labels may be formatted differently by the pipeline (see the header).
+  verification: 'C3: counted from orders. Months in Brazil time (session time zone), 12 rows.'
+  verified: true
+- id: q24
+  question: What was the revenue in each month of the first half of 2018?
+  difficulty: hard
+  tables:
+  - order_items
+  - orders
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: time_series
+    max_rows: null
+    order_matters: true
+  rules:
+  - C1
+  expected_assumptions:
+  - Revenue = sum of item prices, freight excluded
+  - Canceled and unavailable orders are excluded
+  reference_sql: |-
+    SELECT to_char(o.purchased_at, 'YYYY-MM') AS month, round(sum(i.unit_price), 2) AS revenue
+    FROM order_items i
+    JOIN orders o ON o.order_id = i.order_id
+    WHERE o.status NOT IN ('canceled', 'unavailable')
+      AND o.purchased_at >= '2018-01-01' AND o.purchased_at < '2018-07-01'
+    GROUP BY month
+    ORDER BY month
+  expected_result:
+    columns: [month, revenue]
+    rows:
+    - [2018-01, 945456.29]
+    - [2018-02, 837895.43]
+    - [2018-03, 981051.06]
+    - [2018-04, 993592.98]
+    - [2018-05, 992871.75]
+    - [2018-06, 863265.53]
+    truncated: false
+    row_count: 6
+  notes: January to June 2018, 6 rows. Months by purchase date in Brazil time.
+  verification: 'C1: SUM(unit_price), canceled/unavailable excluded; changes the answer (Jan 2018: 945,456.29
+    with the filter, 950,030.36 without). Date range half-open, Brazil time.'
+  verified: true
+- id: q25
+  question: What percentage of leads converted into closed deals, by month of first contact?
+  difficulty: hard
+  tables:
+  - leads
+  - closed_deals
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: time_series
+    max_rows: null
+    order_matters: true
+  rules:
+  - C11
+  - SQL4
+  expected_assumptions:
+  - A lead converted if its mql_id appears in closed_deals
+  reference_sql: |-
+    SELECT to_char(l.first_contact_date, 'YYYY-MM') AS month,
+      round(100.0 * count(cd.mql_id) / count(*), 2) AS conversion_pct
+    FROM leads l
+    LEFT JOIN closed_deals cd ON cd.mql_id = l.mql_id
+    GROUP BY month
+    ORDER BY month
+  expected_result:
+    columns: [month, conversion_pct]
+    rows:
+    - [2017-06, 0.0]
+    - [2017-07, 0.84]
+    - [2017-08, 2.33]
+    - [2017-09, 2.24]
+    - [2017-10, 3.37]
+    - [2017-11, 4.04]
+    - [2017-12, 5.5]
+    - [2018-01, 13.32]
+    - [2018-02, 14.49]
+    - [2018-03, 14.14]
+    - [2018-04, 13.54]
+    - [2018-05, 9.98]
+    truncated: false
+    row_count: 12
+  notes: leads LEFT JOIN closed_deals so unconverted leads stay in the denominator (C11).
+  verification: 'C11: leads LEFT JOIN closed_deals on mql_id; rate = deals / leads. mql_id is unique in
+    both tables (8,000 and 841), so nothing is double-counted. 12 months, 2017-06 to 2018-05, all inside
+    the funnel period. SQL4: 0-100 scale.'
+  verified: true
+- id: q26
+  question: What was the average review score for each year in which orders were placed?
+  difficulty: medium
+  tables:
+  - order_reviews
+  - orders
+  answerable: true
+  expected_status: ok
+  expected_shape:
+    kind: time_series
+    max_rows: null
+    order_matters: true
+  rules:
+  - C6
+  expected_assumptions:
+  - Uses only the latest review per order
+  reference_sql: |-
+    SELECT extract(year FROM o.purchased_at)::int AS year, round(avg(r.score), 2) AS avg_score
+    FROM order_reviews r
+    JOIN orders o ON o.order_id = r.order_id
+    WHERE r.is_latest_for_order
+    GROUP BY year
+    ORDER BY year
+  expected_result:
+    columns: [year, avg_score]
+    rows:
+    - [2016, 3.53]
+    - [2017, 4.09]
+    - [2018, 4.09]
+    truncated: false
+    row_count: 3
+  notes: 'Year of the order''s purchase date: 2016, 2017, 2018.'
+  verification: 'C6: latest review only; changes 2016 (3.53 with, 3.54 without).'
+  verified: true
+- id: q27
+  question: What are the names of the 5 best-selling products?
+  difficulty: easy
+  tables:
+  - order_items
+  - products
+  answerable: false
+  expected_status: unanswerable
+  expected_shape: null
+  rules:
+  - A4:product_names
+  unanswerable_reason_topic: product names
+  notes: Product names were removed by anonymization; only product_id and category exist.
+  verification: 'Matches DATA_LIMITS: product names were removed by anonymization.'
+  verified: true
+- id: q28
+  question: What was the profit margin of each product category in 2018?
+  difficulty: easy
+  tables:
+  - order_items
+  - orders
+  - products
+  answerable: false
+  expected_status: unanswerable
+  expected_shape: null
+  rules:
+  - A4:profit
+  unanswerable_reason_topic: profit or cost
+  notes: Only prices, freight and payments exist; no cost, so no profit or margin.
+  verification: 'Matches DATA_LIMITS: profit, cost or margin.'
+  verified: true
+- id: q29
+  question: How many orders will be placed in December 2018?
+  difficulty: easy
+  tables:
+  - orders
+  answerable: false
+  expected_status: unanswerable
+  expected_shape: null
+  rules:
+  - A4:forecast
+  unanswerable_reason_topic: future date or forecast
+  notes: The data ends on 2018-10-17; this is a forecast.
+  verification: 'Matches DATA_LIMITS: after the latest date in the data (2018-10-17) / a forecast.'
+  verified: true
+- id: q30
+  question: What is the email address of the seller with the most revenue?
+  difficulty: easy
+  tables:
+  - order_items
+  - orders
+  - sellers
+  answerable: false
+  expected_status: unanswerable
+  expected_shape: null
+  rules:
+  - A4:names
+  unanswerable_reason_topic: personal details
+  notes: Sellers are anonymized ids; no names or contact details exist.
+  verification: 'Matches DATA_LIMITS: names and personal details of sellers (anonymized ids only); email
+    is not in the data at all.'
+  verified: true

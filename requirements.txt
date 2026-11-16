@@ -1,0 +1,11 @@
+pandas
+ipykernel
+psycopg2-binary
+python-dotenv
+# Step 2: sql_query lane
+sqlglot
+pydantic
+langgraph
+langchain-openai
+pytest
+deepeval
